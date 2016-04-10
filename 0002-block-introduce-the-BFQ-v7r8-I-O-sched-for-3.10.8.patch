@@ -1,9 +1,9 @@
-From b8461d2a63e08357aa8111cbcb87a51d61b68c61 Mon Sep 17 00:00:00 2001
+From f23ca85deaf3500549903a0eb94bd12b8dc9dd75 Mon Sep 17 00:00:00 2001
 From: Paolo Valente <paolo.valente@unimore.it>
 Date: Thu, 9 May 2013 19:10:02 +0200
-Subject: [PATCH 2/3] block: introduce the BFQ-v7r8 I/O sched for 3.10
+Subject: [PATCH 2/3] block: introduce the BFQ-v7r8 I/O sched for 3.10.8+
 
-Add the BFQ-v7r8 I/O scheduler to 3.10.
+Add the BFQ-v7r8 I/O scheduler to 3.10.8+.
 The general structure is borrowed from CFQ, as much of the code for
 handling I/O contexts Over time, several useful features have been
 ported from CFQ as well (details in the changelog in README.BFQ). A
@@ -58,10 +58,10 @@ Signed-off-by: Arianna Avanzini <avanzini.arianna@gmail.com>
 ---
  block/bfq-cgroup.c  |  913 ++++++++++++
  block/bfq-ioc.c     |   36 +
- block/bfq-iosched.c | 3886 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ block/bfq-iosched.c | 3898 +++++++++++++++++++++++++++++++++++++++++++++++++++
  block/bfq-sched.c   | 1208 ++++++++++++++++
  block/bfq.h         |  769 ++++++++++
- 5 files changed, 6812 insertions(+)
+ 5 files changed, 6824 insertions(+)
  create mode 100644 block/bfq-cgroup.c
  create mode 100644 block/bfq-ioc.c
  create mode 100644 block/bfq-iosched.c
@@ -1031,10 +1031,10 @@ index 0000000..7f6b000
 +}
 diff --git a/block/bfq-iosched.c b/block/bfq-iosched.c
 new file mode 100644
-index 0000000..729f3e4
+index 0000000..5b675b2
 --- /dev/null
 +++ b/block/bfq-iosched.c
-@@ -0,0 +1,3886 @@
+@@ -0,0 +1,3898 @@
 +/*
 + * Budget Fair Queueing (BFQ) disk scheduler.
 + *
@@ -4496,14 +4496,22 @@ index 0000000..729f3e4
 +	kfree(bfqd);
 +}
 +
-+static int bfq_init_queue(struct request_queue *q)
++static int bfq_init_queue(struct request_queue *q, struct elevator_type *e)
 +{
 +	struct bfq_group *bfqg;
 +	struct bfq_data *bfqd;
++	struct elevator_queue *eq;
++
++	eq = elevator_alloc(q, e);
++	if (eq == NULL)
++		return -ENOMEM;
 +
 +	bfqd = kzalloc_node(sizeof(*bfqd), GFP_KERNEL, q->node);
-+	if (bfqd == NULL)
++	if (bfqd == NULL) {
++		kobject_put(&eq->kobj);
 +		return -ENOMEM;
++	}
++	eq->elevator_data = bfqd;
 +
 +	/*
 +	 * Our fallback bfqq if bfq_find_alloc_queue() runs into OOM issues.
@@ -4524,11 +4532,15 @@ index 0000000..729f3e4
 +	bfqd->oom_bfqq.entity.ioprio_changed = 1;
 +
 +	bfqd->queue = q;
-+	q->elevator->elevator_data = bfqd;
++
++	spin_lock_irq(q->queue_lock);
++	q->elevator = eq;
++	spin_unlock_irq(q->queue_lock);
 +
 +	bfqg = bfq_alloc_root_group(bfqd, q->node);
 +	if (bfqg == NULL) {
 +		kfree(bfqd);
++		kobject_put(&eq->kobj);
 +		return -ENOMEM;
 +	}
 +
@@ -6137,12 +6149,12 @@ index 0000000..c343099
 +}
 diff --git a/block/bfq.h b/block/bfq.h
 new file mode 100644
-index 0000000..4131293
+index 0000000..619bcdd
 --- /dev/null
 +++ b/block/bfq.h
 @@ -0,0 +1,769 @@
 +/*
-+ * BFQ-v7r8 for 3.10.0: data structures and common functions prototypes.
++ * BFQ-v7r8 for 3.10.8+: data structures and common functions prototypes.
 + *
 + * Based on ideas and code from CFQ:
 + * Copyright (C) 2003 Jens Axboe <axboe@kernel.dk>
